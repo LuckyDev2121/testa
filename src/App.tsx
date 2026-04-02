@@ -75,7 +75,6 @@ function normalizeRealtimePayload(payload: RealtimePayload): Game | null {
 function App() {
   const [game, setGame] = useState<Game | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
   const pusherRef = useRef<Pusher | null>(null);
@@ -109,15 +108,10 @@ function App() {
       }
 
       setGame(result.data);
-      setLoadError(null);
-    } catch (error) {
+    } catch {
       if (!preserveGameOnError) {
         setGame(null);
       }
-
-      setLoadError(
-        error instanceof Error ? error.message : "Unable to load game data.",
-      );
     } finally {
       setIsLoading(false);
     }
@@ -200,17 +194,7 @@ function App() {
   return (
     <main className="app-shell">
       <section className="name-card">
-        <div className="game-name">
-          {isLoading ? "Loading..." : game?.name || "No name"}
-        </div>
-        <p className={`status-pill status-pill--${connectionState}`}>
-          {connectionState === "connected"
-            ? "Live updates connected"
-            : connectionState === "connecting"
-              ? "Connecting to live updates..."
-              : "Live updates unavailable"}
-        </p>
-        {loadError ? <p className="status-copy">{loadError}</p> : null}
+        <div className="game-name">{isLoading ? "Loading..." : game?.name || "No name"}</div>
       </section>
     </main>
   );
