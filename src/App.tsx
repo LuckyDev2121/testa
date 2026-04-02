@@ -14,14 +14,69 @@ type GameApiResponse = {
   message?: string;
 };
 
+type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "unavailable"
+  | "failed";
+
+type RealtimePayload =
+  | { game?: Game; data?: Game }
+  | Game
+  | string
+  | null
+  | undefined;
+
 const GAME_ID = 5;
 const API_BASE_URL = import.meta.env.DEV
   ? `/api/game/${GAME_ID}`
   : `https://funint.site/api/game/${GAME_ID}`;
 
+const PUSHER_KEY = "k6dbocgucm0at6gwak3y";
+const REALTIME_HOST = import.meta.env.VITE_REVERB_HOST || "funint.site";
+const REALTIME_CHANNEL = "game-channel";
+const REALTIME_EVENT = "game.updated";
+const REALTIME_SCHEME = import.meta.env.VITE_REVERB_SCHEME || "https";
+const USE_TLS = REALTIME_SCHEME === "https";
+const REALTIME_PORT = Number(
+  import.meta.env.VITE_REVERB_PORT || (USE_TLS ? 443 : 8080),
+);
+
+function isGameRecord(value: unknown): value is Game {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeRealtimePayload(payload: RealtimePayload): Game | null {
+  if (!payload) {
+    return null;
+  }
+
+  if (typeof payload === "string") {
+    try {
+      return normalizeRealtimePayload(JSON.parse(payload) as RealtimePayload);
+    } catch {
+      return null;
+    }
+  }
+
+  if ("game" in payload && isGameRecord(payload.game)) {
+    return payload.game;
+  }
+
+  if ("data" in payload && isGameRecord(payload.data)) {
+    return payload.data;
+  }
+
+  return isGameRecord(payload) ? payload : null;
+}
+
 function App() {
   const [game, setGame] = useState<Game | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("connecting");
   const pusherRef = useRef<Pusher | null>(null);
 
   const fetchGame = async () => {
@@ -43,8 +98,12 @@ function App() {
       }
 
       setGame(result.data);
-    } catch {
+      setLoadError(null);
+    } catch (error) {
       setGame(null);
+      setLoadError(
+        error instanceof Error ? error.message : "Unable to load game data.",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -55,34 +114,55 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const pusher = new Pusher("k6dbocgucm0at6gwak3y", {
-      wsHost: "funint.site",
-      wsPort: 8080,
-      wssPort: 443,
-      forceTLS: true,
-      enabledTransports: ["ws", "wss"],
-      disableStats: true,
+    const pusher = new Pusher(PUSHER_KEY, {
       cluster: "",
+      wsHost: REALTIME_HOST,
+      httpHost: REALTIME_HOST,
+      wsPort: REALTIME_PORT,
+      httpPort: REALTIME_PORT,
+      wssPort: REALTIME_PORT,
+      httpsPort: REALTIME_PORT,
+      forceTLS: USE_TLS,
+      enabledTransports: ["ws", "wss"],
+      enableStats: false,
     });
 
     pusherRef.current = pusher;
 
-    const channel = pusher.subscribe("game-channel");
+    const handleStateChange = (states: {
+      current: ConnectionState;
+      previous: ConnectionState;
+    }) => {
+      setConnectionState(states.current);
+    };
 
-    channel.bind("game.updated", (payload: { game?: Game }) => {
-      if (!payload?.game) {
+    const handleConnectionError = () => {
+      setConnectionState("failed");
+    };
+
+    pusher.connection.bind("state_change", handleStateChange);
+    pusher.connection.bind("error", handleConnectionError);
+
+    const channel = pusher.subscribe(REALTIME_CHANNEL);
+
+    channel.bind(REALTIME_EVENT, (payload: RealtimePayload) => {
+      const nextGame = normalizeRealtimePayload(payload);
+
+      if (!nextGame) {
         return;
       }
 
       setGame((currentGame) => ({
         ...(currentGame ?? {}),
-        ...payload.game,
+        ...nextGame,
       }));
     });
 
     return () => {
+      pusher.connection.unbind("state_change", handleStateChange);
+      pusher.connection.unbind("error", handleConnectionError);
       channel.unbind_all();
-      pusher.unsubscribe("game-channel");
+      pusher.unsubscribe(REALTIME_CHANNEL);
       pusher.disconnect();
       pusherRef.current = null;
     };
@@ -94,6 +174,14 @@ function App() {
         <div className="game-name">
           {isLoading ? "Loading..." : game?.name || "No name"}
         </div>
+        <p className={`status-pill status-pill--${connectionState}`}>
+          {connectionState === "connected"
+            ? "Live updates connected"
+            : connectionState === "connecting"
+              ? "Connecting to live updates..."
+              : "Live updates unavailable"}
+        </p>
+        {loadError ? <p className="status-copy">{loadError}</p> : null}
       </section>
     </main>
   );
