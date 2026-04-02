@@ -42,6 +42,7 @@ const USE_TLS = REALTIME_SCHEME === "https";
 const REALTIME_PORT = Number(
   import.meta.env.VITE_REVERB_PORT || (USE_TLS ? 443 : 8080),
 );
+const FALLBACK_REFRESH_MS = 5000;
 
 function isGameRecord(value: unknown): value is Game {
   return typeof value === "object" && value !== null;
@@ -79,7 +80,17 @@ function App() {
     useState<ConnectionState>("connecting");
   const pusherRef = useRef<Pusher | null>(null);
 
-  const fetchGame = async () => {
+  const fetchGame = async ({
+    preserveGameOnError = false,
+    showLoading = false,
+  }: {
+    preserveGameOnError?: boolean;
+    showLoading?: boolean;
+  } = {}) => {
+    if (showLoading) {
+      setIsLoading(true);
+    }
+
     try {
       const response = await fetch(API_BASE_URL, {
         headers: {
@@ -100,7 +111,10 @@ function App() {
       setGame(result.data);
       setLoadError(null);
     } catch (error) {
-      setGame(null);
+      if (!preserveGameOnError) {
+        setGame(null);
+      }
+
       setLoadError(
         error instanceof Error ? error.message : "Unable to load game data.",
       );
@@ -110,7 +124,7 @@ function App() {
   };
 
   useEffect(() => {
-    void fetchGame();
+    void fetchGame({ showLoading: true });
   }, []);
 
   useEffect(() => {
@@ -149,6 +163,7 @@ function App() {
       const nextGame = normalizeRealtimePayload(payload);
 
       if (!nextGame) {
+        void fetchGame({ preserveGameOnError: true });
         return;
       }
 
@@ -156,6 +171,8 @@ function App() {
         ...(currentGame ?? {}),
         ...nextGame,
       }));
+
+      void fetchGame({ preserveGameOnError: true });
     });
 
     return () => {
@@ -167,6 +184,18 @@ function App() {
       pusherRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (connectionState !== "connected") {
+        void fetchGame({ preserveGameOnError: true });
+      }
+    }, FALLBACK_REFRESH_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [connectionState]);
 
   return (
     <main className="app-shell">
